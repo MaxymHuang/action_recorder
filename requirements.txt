@@ -1,5 +1,7 @@
-opencv-python
-numpy
-mss
-pynput
-pyautogui
+opencv-python    # For video processing
+numpy           # For array operations
+mss             # For screen capture
+pynput          # For keyboard and mouse input capture
+pyautogui       # For input replay
+pywin32         # For Windows monitor detection
+pillow          # For screenshot capture and image processing

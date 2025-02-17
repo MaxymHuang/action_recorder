@@ -7,6 +7,13 @@ import json
 from pathlib import Path
 from pynput import keyboard, mouse
 import pyautogui
+# Make win32api import optional
+try:
+    import win32api
+    HAS_WIN32API = True
+except ImportError:
+    HAS_WIN32API = False
+
 # Disable PyAutoGUI's failsafe and increase speed
 pyautogui.FAILSAFE = False
 pyautogui.MINIMUM_DURATION = 0  # Remove minimum movement time
@@ -58,32 +65,43 @@ def validate_screen_position(x: int, y: int) -> tuple:
 def record_screen(stop_event: threading.Event, pause_event: threading.Event):
     sct = mss.mss()
     
-    # Use selected monitor or region
-    if CONFIG["screen_region"]:
-        monitor = CONFIG["screen_region"]
-    else:
-        # Add 1 because mss.monitors[0] is the "all in one" monitor
-        monitor = sct.monitors[CONFIG["monitor_number"]]
-    
-    width = monitor["width"]
-    height = monitor["height"]
-    
-    filename = get_timestamp_filename("screen", "avi")
-    fourcc = cv2.VideoWriter_fourcc(*CONFIG["video_format"])
-    out = cv2.VideoWriter(filename, fourcc, CONFIG["fps"], (width, height))
-    
-    frames_captured = 0
     try:
+        # Use selected monitor or region
+        if CONFIG["screen_region"]:
+            monitor = CONFIG["screen_region"]
+        else:
+            # Add 1 because mss.monitors[0] is the "all in one" monitor
+            monitor = sct.monitors[CONFIG["monitor_number"]]
+        
+        width = monitor["width"]
+        height = monitor["height"]
+        
+        filename = get_timestamp_filename("screen", "avi")
+        fourcc = cv2.VideoWriter_fourcc(*CONFIG["video_format"])
+        out = cv2.VideoWriter(filename, fourcc, CONFIG["fps"], (width, height))
+        
+        frames_captured = 0
+        last_frame_time = time.time()
+        
         while not stop_event.is_set():
             if not pause_event.is_set():
-                img = sct.grab(monitor)
-                frame = np.array(img)
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-                out.write(frame)
-                frames_captured += 1
-                time.sleep(1/CONFIG["fps"])
+                current_time = time.time()
+                frame_delta = current_time - last_frame_time
+                
+                if frame_delta >= 1/CONFIG["fps"]:
+                    img = sct.grab(monitor)
+                    frame = np.array(img)
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+                    out.write(frame)
+                    frames_captured += 1
+                    last_frame_time = current_time
+    except Exception as e:
+        print(f"Error during recording: {e}")
     finally:
-        out.release()
+        try:
+            out.release()
+        except:
+            pass
         print(f"Recorded {frames_captured} frames to {filename}")
 
 def toggle_pause(pause_event: threading.Event):
@@ -346,13 +364,14 @@ def list_monitors():
         print(f"Monitor {i}:")
         print(f"  Position: ({monitor['left']}, {monitor['top']})")
         print(f"  Resolution: {monitor['width']}x{monitor['height']}")
-        try:
-            # Try to get monitor name using win32api
-            import win32api
-            device = win32api.EnumDisplayDevices(None, i-1)
-            print(f"  Name: {device.DeviceString}")
-        except:
-            pass
+        
+        # Only try to get monitor name if win32api is available
+        if HAS_WIN32API:
+            try:
+                device = win32api.EnumDisplayDevices(None, i-1)
+                print(f"  Name: {device.DeviceString}")
+            except Exception:
+                print("  Name: Unknown")
         print()
 
 def select_monitor():
@@ -379,17 +398,30 @@ def select_monitor():
 if __name__ == "__main__":
     ensure_output_directory()
     
-    print("\n1. Start new recording")
-    print("2. Replay existing recording")
-    
     while True:
-        choice = input("\nEnter your choice (1-2): ")
+        print("\n0. Exit program")
+        print("1. Start new recording")
+        print("2. Replay existing recording")
         
-        if choice == "1":
+        choice = input("\nEnter your choice (0-2): ")
+        
+        if choice == "0":
+            print("Exiting program...")
+            break
+        elif choice == "1":
             ensure_output_directory()
+            
+            # Select monitor before starting recording
+            CONFIG["monitor_number"] = select_monitor()
+            
             stop_recording_event = threading.Event()
             pause_event = threading.Event()
             start_time = time.time()
+            
+            # Initialize these at the start
+            is_paused = False
+            pause_start_time = None
+            total_pause_duration = 0
 
             # Start event processing thread
             events_thread = threading.Thread(target=process_events, daemon=True)
@@ -397,22 +429,22 @@ if __name__ == "__main__":
 
             keyboard_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
             mouse_listener = mouse.Listener(on_move=on_move, on_click=on_click, on_scroll=on_scroll)
+            
+            # Start listeners before screen recording
             keyboard_listener.start()
             mouse_listener.start()
 
             screen_thread = threading.Thread(target=record_screen, args=(stop_recording_event, pause_event))
             screen_thread.start()
 
-            print("Recording... Controls:")
+            print("\nRecording... Controls:")
             print("- Press Ctrl+C in this console to stop recording")
-            print("- Press Ctrl+P to pause/resume recording")
+            print("- Press Pause key to pause/resume recording")
 
             try:
                 while True:
-                    time.sleep(0.1)
-                    # Rename the context manager variable to avoid conflict
-                    with keyboard.Events() as keyboard_events:
-                        event = keyboard_events.get(0.1)
+                    with keyboard.Events() as events:
+                        event = events.get(0.1)  # 100ms timeout
                         if event and isinstance(event, keyboard.Events.Press):
                             if event.key == keyboard.Key.pause:
                                 toggle_pause(pause_event)
@@ -420,7 +452,7 @@ if __name__ == "__main__":
                 print("\nStopping recording...")
                 stop_recording_event.set()
                 screen_thread.join()
-                events_thread.join(timeout=1)  # Wait for events thread to finish
+                events_thread.join(timeout=1)
                 keyboard_listener.stop()
                 mouse_listener.stop()
 
@@ -439,8 +471,12 @@ if __name__ == "__main__":
                 verify_replay(events, original_file)
                 print("\nReplay and verification completed.")
                 print("You can find the verification recording in the recordings directory.")
-            else:
-                print("Replay cancelled.")
-            break
         else:
-            print("Invalid choice. Please enter 1 or 2.")
+            print("Invalid choice. Please enter 0, 1, or 2.")
+        
+        # Ask if user wants to continue after recording or replay
+        if choice in ["1", "2"]:
+            continue_choice = input("\nReturn to main menu? (y/n): ").lower()
+            if continue_choice != 'y':
+                print("Exiting program...")
+                break
