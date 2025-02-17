@@ -21,7 +21,8 @@ CONFIG = {
     "fps": 15,
     "video_format": "XVID",
     "output_dir": "recordings",
-    "screen_region": None  # None for full screen, or (x, y, width, height)
+    "screen_region": None,  # None for full screen, or (x, y, width, height)
+    "monitor_number": 1     # Default to primary monitor
 }
 
 # Global variables
@@ -56,9 +57,16 @@ def validate_screen_position(x: int, y: int) -> tuple:
 
 def record_screen(stop_event: threading.Event, pause_event: threading.Event):
     sct = mss.mss()
-    monitor = CONFIG["screen_region"] or sct.monitors[1]
-    width = monitor["width"] if isinstance(monitor, dict) else monitor[2]
-    height = monitor["height"] if isinstance(monitor, dict) else monitor[3]
+    
+    # Use selected monitor or region
+    if CONFIG["screen_region"]:
+        monitor = CONFIG["screen_region"]
+    else:
+        # Add 1 because mss.monitors[0] is the "all in one" monitor
+        monitor = sct.monitors[CONFIG["monitor_number"]]
+    
+    width = monitor["width"]
+    height = monitor["height"]
     
     filename = get_timestamp_filename("screen", "avi")
     fourcc = cv2.VideoWriter_fourcc(*CONFIG["video_format"])
@@ -276,7 +284,7 @@ def display_recordings(recordings: List[Path]) -> None:
         size = rec.stat().st_size / 1024  # Size in KB
         print(f"{i}. {dt.strftime('%Y-%m-%d %H:%M:%S')} ({size:.1f}KB) - {rec.name}")
 
-def select_recording() -> Optional[List[Dict]]:
+def select_recording() -> Optional[tuple[List[Dict], str]]:
     """Let user select a recording to replay"""
     recordings = list_recordings()
     if not recordings:
@@ -292,8 +300,79 @@ def select_recording() -> Optional[List[Dict]]:
                 return None
             idx = int(choice) - 1
             if 0 <= idx < len(recordings):
-                return load_events(str(recordings[idx]))
+                events = load_events(str(recordings[idx]))
+                return events, str(recordings[idx])
             print(f"Please enter a number between 1 and {len(recordings)}")
+        except ValueError:
+            print("Please enter a valid number")
+
+def verify_replay(events_list: List[Dict], original_events_file: str):
+    """Record and save verification of replay actions"""
+    stop_verification = threading.Event()
+    pause_verification = threading.Event()
+    verification_start = time.time()
+
+    # Start screen recording for verification
+    verification_thread = threading.Thread(
+        target=record_screen, 
+        args=(stop_verification, pause_verification)
+    )
+    verification_thread.start()
+
+    # Perform replay
+    try:
+        replay_actions(events_list)
+    finally:
+        # Stop verification recording
+        stop_verification.set()
+        verification_thread.join()
+
+    # Save verification info
+    verification_info = {
+        "original_recording": original_events_file,
+        "verification_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "events_replayed": len(events_list)
+    }
+    
+    verification_file = get_timestamp_filename("verification", "json")
+    with open(verification_file, 'w') as f:
+        json.dump(verification_info, f, indent=2)
+
+def list_monitors():
+    """List all available monitors and their details"""
+    sct = mss.mss()
+    print("\nAvailable monitors:")
+    for i, monitor in enumerate(sct.monitors[1:], 1):  # Skip the "all in one" monitor
+        print(f"Monitor {i}:")
+        print(f"  Position: ({monitor['left']}, {monitor['top']})")
+        print(f"  Resolution: {monitor['width']}x{monitor['height']}")
+        try:
+            # Try to get monitor name using win32api
+            import win32api
+            device = win32api.EnumDisplayDevices(None, i-1)
+            print(f"  Name: {device.DeviceString}")
+        except:
+            pass
+        print()
+
+def select_monitor():
+    """Let user select which monitor to record"""
+    sct = mss.mss()
+    monitor_count = len(sct.monitors) - 1  # Subtract 1 for the "all in one" monitor
+    
+    if monitor_count == 1:
+        print("Only one monitor detected, using primary monitor.")
+        return 1
+    
+    list_monitors()
+    
+    while True:
+        try:
+            choice = input(f"Select monitor to record (1-{monitor_count}): ")
+            monitor_num = int(choice)
+            if 1 <= monitor_num <= monitor_count:
+                return monitor_num
+            print(f"Please enter a number between 1 and {monitor_count}")
         except ValueError:
             print("Please enter a valid number")
 
@@ -353,9 +432,13 @@ if __name__ == "__main__":
             if replay == 'y':
                 replay_actions(events)
         elif choice == "2":
-            events = select_recording()
-            if events:
-                replay_actions(events)
+            result = select_recording()
+            if result:
+                events, original_file = result
+                print("\nStarting replay with verification recording...")
+                verify_replay(events, original_file)
+                print("\nReplay and verification completed.")
+                print("You can find the verification recording in the recordings directory.")
             else:
                 print("Replay cancelled.")
             break
