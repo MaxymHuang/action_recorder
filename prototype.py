@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from pynput import keyboard, mouse
 import pyautogui
+import sys
+import os
 # Make win32api import optional
 try:
     import win32api
@@ -23,11 +25,19 @@ from queue import Queue, Empty  # Add Empty to imports
 from threading import Lock
 from datetime import datetime  # Add datetime to imports
 
+def get_base_path():
+    """Get base path for resources, handles both dev and PyInstaller"""
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        # Running in PyInstaller bundle
+        return os.path.dirname(sys.executable)
+    # Running in normal Python environment
+    return os.path.dirname(os.path.abspath(__file__))
+
 # Configuration
 CONFIG = {
     "fps": 15,
     "video_format": "XVID",
-    "output_dir": "recordings",
+    "output_dir": os.path.join(get_base_path(), "recordings"),
     "screen_region": None,  # None for full screen, or (x, y, width, height)
     "monitor_number": 1     # Default to primary monitor
 }
