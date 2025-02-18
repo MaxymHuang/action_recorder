@@ -33,7 +33,7 @@ CONFIG = {
 }
 
 # Global variables
-events: List[Dict] = []
+event_list: List[Dict] = []
 start_time: float = 0
 is_paused: bool = False
 pause_start_time: Optional[float] = None
@@ -50,7 +50,7 @@ def get_timestamp_filename(prefix: str, ext: str) -> str:
 
 def save_events(filename: str):
     with open(filename, 'w') as f:
-        json.dump(events, f, indent=2)
+        json.dump(event_list, f, indent=2)
 
 def load_events(filename: str) -> List[Dict]:
     with open(filename, 'r') as f:
@@ -118,9 +118,9 @@ def toggle_pause(pause_event: threading.Event):
 
 def process_event(event_data: Dict):
     """Thread-safe event processing"""
-    global events
+    global event_list
     with events_lock:
-        events.append(event_data)
+        event_list.append(event_data)
 
 def on_press(key):
     if is_paused:
@@ -458,11 +458,11 @@ if __name__ == "__main__":
 
             events_file = get_timestamp_filename("events", "json")
             save_events(events_file)
-            print(f"Recorded {len(events)} events to {events_file}")
+            print(f"Recorded {len(event_list)} events to {events_file}")
 
             replay = input("Would you like to replay the recording? (y/n): ").lower()
             if replay == 'y':
-                replay_actions(events)
+                replay_actions(event_list)
         elif choice == "2":
             result = select_recording()
             if result:
